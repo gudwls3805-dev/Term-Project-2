@@ -65,6 +65,3 @@ confidence는 해당 감정 분류에 대한 신뢰도를
     except Exception as e:
         logging.error("감정 분석 API 호출 실패: %s", e)
         return None
-    
-if __name__ == "__main__":
-    print(analyze_sentiment("배송이 빠르고 제품 품질도 정말 좋아요."))
