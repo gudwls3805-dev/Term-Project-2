@@ -48,9 +48,18 @@ confidence는 해당 감정 분류에 대한 신뢰도를
 
         result = json.loads(response.text)
 
+        sentiment = result["sentiment"]
+        confidence = float(result["confidence"])
+
+        if sentiment not in ("positive", "negative", "neutral"):
+            raise ValueError(f"잘못된 감정 값: {sentiment}")
+
+        if not 0.0 <= confidence <= 1.0:
+            raise ValueError(f"신뢰도 범위 오류: {confidence}")
+
         return {
-            "sentiment": result["sentiment"],
-            "confidence": float(result["confidence"]),
+            "sentiment": sentiment,
+            "confidence": confidence,
         }
 
     except Exception as e:
