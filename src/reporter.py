@@ -440,6 +440,117 @@ def chart_length_by_sentiment(
 
 
 # ─────────────────────────────────────────────────────────────
+# 6. 통계·품질 지표 계산
+# ─────────────────────────────────────────────────────────────
+
+# "별점은 높은데 감정은 부정" / "별점은 낮은데 감정은 긍정" — 어긋남을 판정할 기준.
+# 중립(별점 3점, 감정 neutral)은 판정에서 통째로 뺀다. 이유는 설계메모 1-6에 적어두었다.
+HIGH_RATINGS = (4, 5)
+LOW_RATINGS = (1, 2)
+
+
+def _percent(part: int, whole: int) -> float | None:
+    """비율(%)을 구한다. 분모가 0이면 0.0이 아니라 None을 돌려준다.
+
+    0.0으로 돌려주면 "긍정이 0%"로 잘못 읽힌다.
+    실제 뜻은 "셀 수 있는 리뷰가 아예 없다"이므로 둘을 구분한다.
+    """
+    if whole == 0:
+        return None
+    return round(part / whole * 100, 1)
+
+
+def _pct_text(value: float | None) -> str:
+    """비율을 사람이 읽을 글자로 바꾼다. 셀 수 없었으면 '—'."""
+    return "—" if value is None else f"{value}%"
+
+
+def calc_stats(reviews: list[dict]) -> dict:
+    """리뷰 목록에서 통계·품질 지표를 계산해 딕셔너리로 돌려준다.
+
+    reviews : 'rating', 'sentiment' 키를 가진 딕셔너리들의 목록
+    반환값  : 아래 3종 지표를 담은 딕셔너리 (데이터가 비어도 None이 아니라 딕셔너리)
+
+      ① 긍정 비율        positive_ratio
+      ② 평균 별점        avg_rating
+      ③ 별점-감정 일치율 match.match_rate   ← 이 프로젝트의 차별화 지표
+
+    차트 함수들과 달리 데이터가 비어도 None을 돌려주지 않는다.
+    리포트(단위 4)가 이 값을 받아 쓰는데, None이면 쓰는 쪽에서 매번 검사해야 하기 때문이다.
+    대신 계산이 불가능한 비율 항목만 None으로 두어 "0%"와 "셀 수 없음"을 구분한다.
+    """
+    total = len(reviews)
+
+    # ── ① 감정 집계 ──────────────────────────────────────────
+    # 아직 분석 전(sentiment 없음)인 리뷰는 분모에서 뺀다.
+    # 분모에 넣으면 분석을 돌릴 때마다 '긍정 비율'이 진행률에 따라 흔들린다.
+    sentiments = [r.get("sentiment") for r in reviews]
+    counts = Counter(s for s in sentiments if s in SENTIMENT_KO)
+    analyzed = sum(counts.values())
+    sentiment_counts = {s: counts.get(s, 0) for s in SENTIMENT_ORDER}
+
+    # ── ② 별점 집계 ──────────────────────────────────────────
+    # 1~5 범위를 벗어난 값·빈 칸은 평균을 왜곡하므로 걸러낸다.
+    ratings = [
+        r.get("rating") for r in reviews
+        if isinstance(r.get("rating"), int) and r.get("rating") in RATING_RANGE
+    ]
+    rating_counts = {value: 0 for value in RATING_RANGE}
+    for value in ratings:
+        rating_counts[value] += 1
+    avg_rating = round(statistics.mean(ratings), 2) if ratings else None
+
+    # ── ③ 별점-감정 일치율 ───────────────────────────────────
+    # 별점 4~5는 '긍정'이, 1~2는 '부정'이 정상. 그 반대가 나오면 어긋남이다.
+    # 별점 3점이거나 감정이 중립인 리뷰는 어느 쪽으로도 세지 않고 건너뛴다.
+    matched = 0
+    high_rating_negative = 0  # 별점 4~5인데 감정은 부정 (= 별점만 보면 놓치는 불만)
+    low_rating_positive = 0   # 별점 1~2인데 감정은 긍정 (= 오탈자·오해 가능성)
+
+    for review in reviews:
+        rating = review.get("rating")
+        sentiment = review.get("sentiment")
+
+        if rating in HIGH_RATINGS:
+            if sentiment == "positive":
+                matched += 1
+            elif sentiment == "negative":
+                high_rating_negative += 1
+        elif rating in LOW_RATINGS:
+            if sentiment == "negative":
+                matched += 1
+            elif sentiment == "positive":
+                low_rating_positive += 1
+
+    mismatched = high_rating_negative + low_rating_positive
+    compared = matched + mismatched  # 실제로 판정한 건수 (중립·미분석 제외)
+
+    if analyzed == 0:
+        logger.warning("감정이 분석된 리뷰가 0건입니다. 비율 지표는 None으로 둡니다.")
+
+    return {
+        "total": total,
+        "analyzed": analyzed,
+        "unanalyzed": total - analyzed,
+        "sentiment_counts": sentiment_counts,
+        "positive_ratio": _percent(sentiment_counts["positive"], analyzed),
+        "negative_ratio": _percent(sentiment_counts["negative"], analyzed),
+        "rated": len(ratings),
+        "rating_counts": rating_counts,
+        "avg_rating": avg_rating,
+        "match": {
+            "compared": compared,
+            "matched": matched,
+            "mismatched": mismatched,
+            "match_rate": _percent(matched, compared),
+            "mismatch_rate": _percent(mismatched, compared),
+            "high_rating_negative": high_rating_negative,
+            "low_rating_positive": low_rating_positive,
+        },
+    }
+
+
+# ─────────────────────────────────────────────────────────────
 # 9. 혼자 확인해 보는 용도 —  python src/reporter.py
 # ─────────────────────────────────────────────────────────────
 
@@ -526,3 +637,22 @@ if __name__ == "__main__":
     print("저장된 차트:")
     for path in charts:
         print(f"  - {path}")
+
+    # 단위 3에서 만든 통계·품질 지표를 눈으로 확인한다.
+    # ※ 아래 숫자 중 '별점-감정 일치율'은 지금 100%로 나오는 게 정상이다.
+    #   단독 실행 모드의 감정값이 별점으로 매긴 임시값이라 어긋날 수가 없기 때문이다.
+    #   B의 AI 분석이 붙어야 이 지표에 의미가 생긴다.
+    stats = calc_stats(reviews)
+    match = stats["match"]
+
+    print("\n[통계·품질 지표]")
+    print(f"  전체 {stats['total']}건 · 감정 분석 완료 {stats['analyzed']}건 "
+          f"· 미분석 {stats['unanalyzed']}건")
+    for sentiment in SENTIMENT_ORDER:
+        print(f"    {SENTIMENT_KO[sentiment]} {stats['sentiment_counts'][sentiment]}건")
+    print(f"  ① 긍정 비율        : {_pct_text(stats['positive_ratio'])}")
+    print(f"  ② 평균 별점        : {stats['avg_rating']}점 (별점 있는 {stats['rated']}건 기준)")
+    print(f"  ③ 별점-감정 일치율 : {_pct_text(match['match_rate'])} "
+          f"(판정 {match['compared']}건 중 어긋남 {match['mismatched']}건)")
+    print(f"       별점 4~5인데 부정: {match['high_rating_negative']}건")
+    print(f"       별점 1~2인데 긍정: {match['low_rating_positive']}건")
