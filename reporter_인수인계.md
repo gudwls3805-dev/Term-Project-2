@@ -1,6 +1,7 @@
 # reporter 인수인계 문서
 
 > 이 파일 하나만 읽고도 이어서 작업할 수 있게 정리한 문서다.
+> 위치: 레포 **루트**(`reporter_인수인계.md`). 짝이 되는 설계메모는 `docs/reporter_설계메모.md`에 있다.
 > 작업 대상: `src/reporter.py` (브랜치 `feat/reporter`)
 > 최종 갱신: 단위 4 완료 + 체크리스트 3번 대조 시점
 
@@ -272,7 +273,7 @@ README에 **"원본 데이터에 작성일이 없어 시간축을 만들 수 없
 
 ## 7. 완료된 작업 (단위 1~4)
 
-`src/reporter.py` — 약 960줄. 구성:
+`src/reporter.py` — 약 990줄. 구성:
 
 | 구역 | 내용 |
 |---|---|
@@ -297,7 +298,7 @@ README에 **"원본 데이터에 작성일이 없어 시간축을 만들 수 없
 모든 차트 함수는 **데이터가 비면 `None`을 반환하고 경고 로그만 남긴다.** 예외를 던져 프로그램을 죽이지 않는다.
 **`calc_stats()`만 예외**로, 비어 있어도 항상 딕셔너리를 반환한다(리포트가 받아 쓰는 재료이기 때문. 설계메모 1-7).
 
-`docs/reporter_설계메모.md` — 약 400줄. 설계 근거 + 코드 라인별 해설 + README 조각 + 팀 전달사항.
+`docs/reporter_설계메모.md` — 약 635줄. 설계 근거 + 코드 라인별 해설 + README 조각 + 팀 전달사항.
 
 ### 단독 실행 확인
 ```
@@ -377,7 +378,7 @@ save_report(reviews, insights)           # export 서브커맨드
 ### Git
 ```
 git checkout main && git pull && git checkout feat/reporter   # 작업 시작 전
-git add src/reporter.py docs/                                  # 내 파일만
+git add src/reporter.py docs/ reporter_인수인계.md             # 내 파일만
 git commit -m "무엇을 왜 바꿨는지 한 줄"
 git push
 ```
