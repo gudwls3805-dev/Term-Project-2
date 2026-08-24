@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 def get_conn(db_path=DB_PATH):
     conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row  # row["review_text"] 처럼 컬럼명으로 접근
+    conn.row_factory = sqlite3.Row
     return conn
 
 
@@ -40,10 +40,20 @@ def init_db(conn):
             text_hash   TEXT UNIQUE,
             created_at  TEXT DEFAULT (datetime('now','localtime'))
         );
+
+        CREATE TABLE IF NOT EXISTS extractions (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            scope        TEXT,
+            keywords_pos TEXT,
+            keywords_neg TEXT,
+            summary      TEXT,
+            suggestions  TEXT,
+            created_at   TEXT DEFAULT (datetime('now','localtime'))
+        );
         """
     )
     conn.commit()
-    logger.info("DB 초기화 완료 (raw_reviews, clean_reviews)")
+    logger.info("DB 초기화 완료 (raw_reviews, clean_reviews, extractions)")
 
 
 def insert_raw(conn, review_text, rating=None, date=None, product=None):
@@ -116,3 +126,22 @@ def count_reviews(conn, **filters):
     filters.pop("limit", None)
     filters.pop("offset", None)
     return len(query_reviews(conn, **filters))
+
+
+def save_extraction(conn, scope, keywords_pos="", keywords_neg="", summary="", suggestions=""):
+    """B가 호출: 키워드/요약 추출 결과를 저장한다."""
+    conn.execute(
+        "INSERT INTO extractions (scope, keywords_pos, keywords_neg, summary, suggestions) "
+        "VALUES (?,?,?,?,?)",
+        (scope, keywords_pos, keywords_neg, summary, suggestions),
+    )
+    conn.commit()
+
+
+def get_extractions(conn, scope=None):
+    """C가 호출: 저장된 추출 결과를 읽는다. scope 주면 그 조건만."""
+    if scope:
+        return conn.execute(
+            "SELECT * FROM extractions WHERE scope=? ORDER BY id DESC", (scope,)
+        ).fetchall()
+    return conn.execute("SELECT * FROM extractions ORDER BY id DESC").fetchall()
