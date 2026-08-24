@@ -2,7 +2,7 @@
 
 > 이 파일 하나만 읽고도 이어서 작업할 수 있게 정리한 문서다.
 > 작업 대상: `src/reporter.py` (브랜치 `feat/reporter`)
-> 최종 갱신: 단위 3 완료 시점
+> 최종 갱신: 단위 4 완료 시점
 
 ---
 
@@ -41,8 +41,8 @@ CSV·Excel 리뷰 파일을 읽어 → AI로 감정 분석 → 차트 PNG와 리
 | matplotlib 차트 3종 이상 | ✅ **4종 완료** |
 | 한글 폰트 적용 + PNG 저장 | ✅ 완료 (Windows·Linux 양쪽 실행 검증) |
 | 품질 지표 2개 이상 **계산** | ✅ **3종 완료** (`calc_stats`) |
-| 리포트에 품질 지표 + TOP N 집계 1개 이상 + AI 추출 결과 **표시** | ⬜ 미착수 (단위 4) |
-| 리포트 콘솔 출력 및 파일(TXT/MD) 저장 | ⬜ 미착수 |
+| 리포트에 품질 지표 + TOP N 집계 1개 이상 + AI 추출 결과 **표시** | ✅ 완료 (AI 구역은 D가 `insights`를 넘기면 채워짐) |
+| 리포트 콘솔 출력 및 파일(TXT/MD) 저장 | ✅ 완료 (TXT·MD 둘 다) |
 
 ---
 
@@ -188,9 +188,9 @@ extract_insights(reviews: list[str]) -> {"positive_keywords": list[str],   # 최
 
 ---
 
-## 7. 완료된 작업 (단위 1~3)
+## 7. 완료된 작업 (단위 1~4)
 
-`src/reporter.py` — 약 640줄. 구성:
+`src/reporter.py` — 약 960줄. 구성:
 
 | 구역 | 내용 |
 |---|---|
@@ -202,6 +202,13 @@ extract_insights(reviews: list[str]) -> {"positive_keywords": list[str],   # 최
 | `chart_length_by_sentiment()` | 차트 ⑤ 리뷰 길이 분포 (점 흩뿌리기 + 중앙값) |
 | `calc_stats()` | 통계·품질 지표 3종 계산. 항상 딕셔너리 반환 |
 | `_percent()` / `_pct_text()` | 비율 계산(분모 0이면 `None`) · 화면 표기(`None`→`—`) |
+| `render_report()` | 리포트를 글자로 만든다. `style="text"` / `"markdown"` |
+| `print_report()` | 콘솔 출력. cp949가 못 찍는 글자는 `?`로 바꿔서라도 출력 |
+| `save_report()` | `output/report.txt` · `output/report.md` 저장, 경로 반환 |
+| `_report_blocks()` | 리포트 **내용**만 블록 목록으로 만든다 (모양은 입히지 않음) |
+| `_render_text()` / `_render_markdown()` | 블록 목록에 **모양**을 입힌다 |
+| `_longest_negative_reviews()` | TOP N 집계 — 가장 긴 부정 리뷰 5건 |
+| `_width()` / `_pad()` / `_bar()` / `_shorten()` | 한글 폭 계산 · 정렬 · 막대 · 말줄임 |
 | `_load_demo_reviews()` | 단독 실행용. CSV 있으면 읽고, 없으면 내장 가짜 데이터 30건 |
 
 모든 차트 함수는 **데이터가 비면 `None`을 반환하고 경고 로그만 남긴다.** 예외를 던져 프로그램을 죽이지 않는다.
@@ -213,13 +220,16 @@ extract_insights(reviews: list[str]) -> {"positive_keywords": list[str],   # 최
 ```
 python src/reporter.py
 ```
-→ `output/` 폴더에 PNG 4개 생성. 콘솔에 폰트 이름 · 리뷰 건수 · 통계 지표 3종 출력.
+→ `output/` 폴더에 PNG 4개 + `report.txt` + `report.md` 생성. 리포트가 콘솔에도 출력된다.
 
 ### 검증 완료 사항
 - Windows(`Malgun Gothic`)와 Linux(`Noto Sans CJK JP`) 양쪽에서 한글 깨짐 없이 동일하게 출력됨
 - 중립 0건 상황에서도 멈추지 않고 "0건 (0.0%)"으로 정상 출력 (`counts.get(s, 0)` 안전장치 작동 확인)
 - 단위 3 실행 결과(샘플 50건): 긍정 비율 48.0% / 평균 별점 2.92점 / 일치율 100.0%(판정 50건, 어긋남 0건)
   → 일치율 100%는 **임시 감정값이 별점에서 나왔기 때문에 당연한 결과**다. 코드가 맞는지는 이 숫자로 판단할 수 없다.
+- 단위 4 검증: 빈 리뷰 목록 / `insights` 없음 / `insights` 있음 / 마크다운 표에 `|`가 섞인 리뷰 /
+  잘못된 `style` 값 / cp949가 못 찍는 이모지 — 여섯 경우 모두 확인. 이모지는 화면만 `?`, 파일은 원본 유지.
+- 한글(2칸)과 영문(1칸)이 섞인 표에서 열이 어긋나지 않는 것 확인 (`_width()` 작동)
 
 ### 실제로 얻은 발견
 **부정 리뷰 중앙값 45자 vs 긍정 22자 — 부정 리뷰가 2배 길다.**
@@ -228,30 +238,46 @@ python src/reporter.py
 
 ---
 
-## 8. 다음에 할 일 (단위 4)
+## 8. 다음에 할 일
 
-**리포트 생성** — 콘솔 출력 + 파일(TXT/MD) 저장
+**C 담당(stats · dashboard · export)의 필수 요건은 단위 1~4로 모두 채워졌다.**
+남은 것은 D와의 연결, 그리고 B의 AI 분석이 붙은 뒤의 선택 작업이다.
 
-단위 3에서 만든 `calc_stats()`의 결과를 사람이 읽는 글로 바꾸는 단계다. 담아야 할 것:
+### 8-1. D에게 넘길 연결 지점 (내가 하는 일 아님)
 
-1. **품질 지표 3종** — 긍정 비율 / 평균 별점 / 별점–감정 일치율 (이미 계산 완료)
-   - 일치율은 **비율만 쓰지 말고 `match.compared`(판정 건수)를 반드시 함께 표시**한다. 이유는 설계메모 1-6.
-   - 비율이 `None`이면 `0%`가 아니라 `—`로 찍는다(`_pct_text()` 사용).
-2. **TOP N 집계 1개 이상** — B의 `extract_insights()`가 돌려주는 키워드 목록을 받아 표시.
-   reporter가 직접 호출하지 않는다. D가 `main.py`에서 호출해 넘겨준다.
-3. **AI 추출 결과** — 위 함수의 `summary`, `improvements`.
+`main.py`에서 아래처럼 부르면 된다. reporter는 저장소도, AI도 직접 부르지 않는다.
 
-정해야 할 것(단위 4 시작 때 의뢰인이 결정): 출력 형식을 TXT/MD 중 무엇으로 할지,
-콘솔 출력과 파일 내용을 같게 할지 다르게 할지.
+```python
+from src.reporter import (setup_korean_font, calc_stats, print_report, save_report,
+                          chart_sentiment_distribution, chart_rating_sentiment,
+                          chart_negative_trend, chart_length_by_sentiment)
 
-### 단위 3에서 확정된 규칙 (단위 4에서 지킬 것)
-- **일치율은 중립을 판정에서 뺀다.** 별점 3점이거나 감정이 중립이면 일치·어긋남 어느 쪽으로도 세지 않는다.
-- **어긋남은 두 방향을 나눠 본다.** `high_rating_negative`(별점 높은데 부정)는 *고객*을 보는 지표,
-  `low_rating_positive`(별점 낮은데 긍정)는 *AI 분석 품질*을 의심하는 지표다. 합쳐서 쓰지 않는다.
+setup_korean_font()                      # 프로그램 시작 시 한 번
+reviews  = [dict(row) for row in query_reviews(conn)]   # A의 함수
+insights = extract_insights([r["review_text"] for r in reviews])  # B의 함수
 
-B의 감정 분석이 붙은 뒤 추가할 차트 2종(선택):
-- ③ 키워드 TOP N (B의 `extract_insights()` 결과 사용)
-- ⑥ 감정별 신뢰도 분포 (B의 `confidence` 값 사용)
+print_report(reviews, insights)          # stats / dashboard 서브커맨드
+save_report(reviews, insights)           # export 서브커맨드
+```
+
+- `insights`를 안 넘겨도 리포트는 정상 생성된다(6~8번 구역만 안내문).
+- `export` 서브커맨드가 CSV/JSON도 요구하면 그건 A의 저장소 쪽이 맞다. 확인 필요.
+
+### 8-2. B의 감정 분석이 붙은 뒤 (선택)
+
+- 차트 ③ 키워드 TOP N — `insights["positive_keywords"]` / `negative_keywords` 사용
+- 차트 ⑥ 감정별 신뢰도 분포 — B의 `confidence` 값 사용
+- **별점–감정 일치율이 처음으로 의미를 갖는 시점이다.** 지금은 임시 감정값이라 항상 100%다.
+  실제 AI 결과에서 이 숫자가 몇 %로 나오는지가 이 프로젝트의 핵심 발견이 된다.
+
+### 8-3. 단위 3~4에서 확정된 규칙 (앞으로도 지킬 것)
+
+- **일치율은 중립을 판정에서 뺀다.** 비율만 쓰지 말고 `match.compared`(판정 건수)를 항상 함께 표시한다.
+- **어긋남은 두 방향을 나눠 본다.** `high_rating_negative`는 *고객*을 보는 지표,
+  `low_rating_positive`는 *AI 분석 품질*을 의심하는 지표다. 합쳐서 쓰지 않는다.
+- **리포트에 새 항목을 넣을 때는 `_report_blocks()` 한 곳만 고친다.**
+  `_render_text()` / `_render_markdown()`을 직접 손대면 TXT와 MD의 내용이 어긋난다.
+- **리포트에 들어가는 글자에 이모지·em dash 같은 특수문자를 쓰지 않는다.** 윈도우 콘솔(cp949)에 없다.
 
 ---
 

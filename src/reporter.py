@@ -11,10 +11,13 @@ reporter.py — 통계 집계 · 차트 생성 · 리포트 출력
 from __future__ import annotations
 
 import os
+import sys
 import logging
 import platform
 import statistics
+import unicodedata
 from collections import Counter
+from datetime import datetime
 
 import matplotlib
 
@@ -461,8 +464,12 @@ def _percent(part: int, whole: int) -> float | None:
 
 
 def _pct_text(value: float | None) -> str:
-    """비율을 사람이 읽을 글자로 바꾼다. 셀 수 없었으면 '—'."""
-    return "—" if value is None else f"{value}%"
+    """비율을 사람이 읽을 글자로 바꾼다. 셀 수 없었으면 '-'.
+
+    em dash(—)가 아니라 보통 하이픈을 쓰는 이유: 윈도우 기본 콘솔(cp949)에는
+    em dash 글자가 없어서, 그대로 찍으면 프로그램이 거기서 멈춘다.
+    """
+    return "-" if value is None else f"{value}%"
 
 
 def calc_stats(reviews: list[dict]) -> dict:
@@ -548,6 +555,318 @@ def calc_stats(reviews: list[dict]) -> dict:
             "low_rating_positive": low_rating_positive,
         },
     }
+
+
+# ─────────────────────────────────────────────────────────────
+# 7. 리포트 생성 (콘솔 · TXT · MD)
+# ─────────────────────────────────────────────────────────────
+
+REPORT_TITLE = "고객 리뷰 감정 분석 리포트"
+LINE_WIDTH = 64  # 콘솔·TXT에서 제목 줄(===)의 길이
+
+
+def _width(text: str) -> int:
+    """글자가 화면에서 차지하는 칸 수를 센다.
+
+    파이썬 len("긍정")은 2를 돌려주지만, 화면에서 한글 한 글자는 두 칸을 먹는다.
+    len()으로 표를 맞추면 한글이 섞이는 순간 열이 어긋난다.
+    east_asian_width가 'W'(넓음)/'F'(전각)이면 두 칸으로 센다.
+    """
+    return sum(2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1 for ch in text)
+
+
+def _pad(text: str, width: int, align: str = "l") -> str:
+    """글자 뒤(또는 앞)에 공백을 채워 폭을 맞춘다. align이 'r'이면 오른쪽 정렬."""
+    gap = max(0, width - _width(text))
+    return (" " * gap + text) if align == "r" else (text + " " * gap)
+
+
+def _bar(value: int, largest: int, width: int = 14) -> str:
+    """건수를 막대 글자로 바꾼다. 가장 큰 값이 width칸을 채운다.
+
+    0건이면 빈 글자, 1건이라도 있으면 최소 한 칸은 그린다.
+    (반올림해서 0칸이 되면 '있는데 없어 보이는' 막대가 되기 때문)
+    """
+    if largest <= 0 or value <= 0:
+        return ""
+    return "■" * max(1, round(value / largest * width))
+
+
+def _shorten(text: str | None, limit: int = 38) -> str:
+    """리뷰를 표 한 칸에 들어갈 길이로 줄인다. 줄바꿈·연속 공백은 한 칸으로 편다."""
+    flat = " ".join((text or "").split())
+    return flat if len(flat) <= limit else flat[: limit - 1] + "…"
+
+
+def _longest_negative_reviews(reviews: list[dict], top_n: int = 5) -> list[dict]:
+    """부정 리뷰를 글자 수가 많은 순으로 상위 N건 뽑는다. (TOP N 집계)
+
+    단위 2에서 찾은 사실 — 부정 리뷰 중앙값 45자 vs 긍정 22자 — 을 행동으로 옮기는 집계다.
+    리뷰를 다 읽을 수 없을 때 '긴 부정 리뷰부터' 읽으면 구체적인 불만을 가장 빨리 잡는다.
+
+    길이가 같을 때는 id 순으로 줄 세운다. 기준이 하나뿐이면 같은 길이끼리 순서가
+    실행할 때마다 달라질 수 있고, 그러면 제출한 리포트와 평가자가 뽑은 리포트가 달라진다.
+    """
+    negatives = [r for r in reviews if r.get("sentiment") == "negative"]
+    negatives.sort(key=lambda r: (-len(r.get("review_text") or ""), r.get("id") or 0))
+    return negatives[:top_n]
+
+
+def _report_blocks(reviews: list[dict], insights: dict | None = None) -> list[tuple]:
+    """리포트에 들어갈 내용을 '블록' 목록으로 만든다. 서식(모양)은 아직 입히지 않는다.
+
+    블록 종류는 다섯 가지뿐이다.
+      ("h1", 제목) ("h2", 소제목) ("text", 한 줄) ("list", [항목들])
+      ("table", [머리글], [[칸들]], [정렬])
+    내용과 모양을 나눈 이유는 설계메모 1-8에 적어두었다.
+    """
+    stats = calc_stats(reviews)
+    match = stats["match"]
+    blocks: list[tuple] = [
+        ("h1", REPORT_TITLE),
+        ("text", f"생성 시각: {datetime.now().strftime('%Y-%m-%d %H:%M')}"),
+    ]
+
+    # ── 1. 요약 ───────────────────────────────────────────────
+    avg_text = (
+        f"{stats['avg_rating']}점 (별점 있는 {stats['rated']}건 기준)"
+        if stats["avg_rating"] is not None
+        else "-"
+    )
+    blocks += [
+        ("h2", "1. 요약"),
+        ("table", ["지표", "값"], [
+            ["분석한 리뷰", f"{stats['analyzed']}건 "
+                          f"(전체 {stats['total']}건 · 미분석 {stats['unanalyzed']}건)"],
+            ["긍정 비율", _pct_text(stats["positive_ratio"])],
+            ["평균 별점", avg_text],
+            ["별점-감정 일치율", f"{_pct_text(match['match_rate'])} "
+                              f"(판정 {match['compared']}건 중 어긋남 {match['mismatched']}건)"],
+        ], ["l", "l"]),
+    ]
+
+    # ── 2. 감정 분포 ──────────────────────────────────────────
+    counts = stats["sentiment_counts"]
+    largest = max(counts.values())
+    blocks += [
+        ("h2", "2. 감정 분포"),
+        ("table", ["감정", "건수", "비율", ""], [
+            [
+                SENTIMENT_KO[sentiment],
+                f"{counts[sentiment]}건",
+                _pct_text(_percent(counts[sentiment], stats["analyzed"])),
+                _bar(counts[sentiment], largest),
+            ]
+            for sentiment in SENTIMENT_ORDER
+        ], ["l", "r", "r", "l"]),
+    ]
+
+    # ── 3. 별점 분포 ──────────────────────────────────────────
+    rating_counts = stats["rating_counts"]
+    largest = max(rating_counts.values())
+    blocks += [
+        ("h2", "3. 별점 분포"),
+        ("table", ["별점", "건수", "비율", ""], [
+            [
+                f"{rating}점",
+                f"{rating_counts[rating]}건",
+                _pct_text(_percent(rating_counts[rating], stats["rated"])),
+                _bar(rating_counts[rating], largest),
+            ]
+            for rating in RATING_RANGE
+        ], ["l", "r", "r", "l"]),
+    ]
+
+    # ── 4. 품질 지표 ──────────────────────────────────────────
+    blocks += [
+        ("h2", "4. 품질 지표 - 별점만 봐서는 놓치는 것"),
+        ("table", ["항목", "값"], [
+            ["판정 대상", f"{match['compared']}건 (별점 3점 · 감정 중립 · 미분석은 제외)"],
+            ["일치", f"{match['matched']}건"],
+            ["어긋남", f"{match['mismatched']}건 ({_pct_text(match['mismatch_rate'])})"],
+            ["└ 별점 4~5인데 부정",
+             f"{match['high_rating_negative']}건 - 별점만 보면 놓치는 불만"],
+            ["└ 별점 1~2인데 긍정",
+             f"{match['low_rating_positive']}건 - AI 분석 품질을 의심할 신호"],
+        ], ["l", "l"]),
+    ]
+
+    # ── 5. 먼저 읽어야 할 부정 리뷰 TOP N ─────────────────────
+    top_negative = _longest_negative_reviews(reviews)
+    blocks.append(("h2", f"5. 먼저 읽어야 할 부정 리뷰 TOP {len(top_negative) or 5}"))
+    if top_negative:
+        blocks += [
+            ("text",
+             "부정 리뷰는 긍정보다 평균 2배 길다. 길수록 불만이 구체적이라 먼저 읽을 값어치가 있다."),
+            ("table", ["순위", "별점", "길이", "리뷰"], [
+                [
+                    str(rank),
+                    f"{review.get('rating')}점",
+                    f"{len(review.get('review_text') or '')}자",
+                    _shorten(review.get("review_text")),
+                ]
+                for rank, review in enumerate(top_negative, start=1)
+            ], ["r", "r", "r", "l"]),
+        ]
+    else:
+        blocks.append(("text", "부정으로 분류된 리뷰가 없습니다."))
+
+    # ── 6~8. AI 추출 결과 (B의 extract_insights 결과를 D가 넘겨준다) ──
+    missing = "AI 추출 결과가 전달되지 않았습니다. analyze → extract 를 실행한 뒤 다시 만드세요."
+    positive_keywords = (insights or {}).get("positive_keywords") or []
+    negative_keywords = (insights or {}).get("negative_keywords") or []
+
+    blocks.append(("h2", "6. AI 키워드 TOP N"))
+    if not insights:
+        blocks.append(("text", missing))
+    else:
+        blocks.append(("table", ["구분", "키워드"], [
+            [f"긍정 TOP {len(positive_keywords)}", ", ".join(positive_keywords) or "-"],
+            [f"부정 TOP {len(negative_keywords)}", ", ".join(negative_keywords) or "-"],
+        ], ["l", "l"]))
+
+    blocks += [("h2", "7. AI 요약"), ("text", (insights or {}).get("summary") or "-")]
+
+    improvements = (insights or {}).get("improvements") or []
+    blocks.append(("h2", "8. 개선 제안"))
+    blocks.append(("list", improvements) if improvements else ("text", "-"))
+
+    return blocks
+
+
+def _render_text(blocks: list[tuple]) -> str:
+    """블록 목록을 콘솔·TXT용 글자로 바꾼다."""
+    lines: list[str] = []
+
+    for block in blocks:
+        kind = block[0]
+        if kind == "h1":
+            lines += ["=" * LINE_WIDTH, f"  {block[1]}", "=" * LINE_WIDTH]
+        elif kind == "h2":
+            lines += ["", block[1], "-" * _width(block[1])]
+        elif kind == "text":
+            lines.append(block[1])
+        elif kind == "list":
+            lines += [f"  {number}. {item}" for number, item in enumerate(block[1], start=1)]
+        elif kind == "table":
+            lines += _text_table(block[1], block[2], block[3])
+
+    return "\n".join(lines) + "\n"
+
+
+def _text_table(headers: list[str], rows: list[list[str]], aligns: list[str]) -> list[str]:
+    """공백으로 열을 맞춘 표를 만든다. 세로줄(|) 없이 여백만으로 열을 나눈다."""
+    # 열마다 '머리글과 그 열의 모든 칸' 중 가장 넓은 것을 그 열의 폭으로 삼는다
+    widths = [
+        max([_width(headers[index])] + [_width(row[index]) for row in rows])
+        for index in range(len(headers))
+    ]
+
+    def draw(cells: list[str]) -> str:
+        joined = "  ".join(_pad(cell, widths[i], aligns[i]) for i, cell in enumerate(cells))
+        return ("  " + joined).rstrip()  # 오른쪽 끝에 남는 공백은 지운다
+
+    # 머리글이 빈 열(막대 그래프 칸)에는 밑줄을 긋지 않는다. 떠 있는 줄처럼 보인다.
+    divider = draw(["-" * widths[i] if headers[i] else "" for i in range(len(headers))])
+    return [draw(headers), divider] + [draw(row) for row in rows]
+
+
+def _render_markdown(blocks: list[tuple]) -> str:
+    """블록 목록을 마크다운(.md)으로 바꾼다."""
+    chunks: list[str] = []
+
+    for block in blocks:
+        kind = block[0]
+        if kind == "h1":
+            chunks.append(f"# {block[1]}")
+        elif kind == "h2":
+            chunks.append(f"## {block[1]}")
+        elif kind == "text":
+            chunks.append(block[1])
+        elif kind == "list":
+            chunks.append("\n".join(f"{n}. {item}" for n, item in enumerate(block[1], start=1)))
+        elif kind == "table":
+            chunks.append(_markdown_table(block[1], block[2], block[3]))
+
+    return "\n\n".join(chunks) + "\n"
+
+
+def _markdown_table(headers: list[str], rows: list[list[str]], aligns: list[str]) -> str:
+    """마크다운 표를 만든다. 폭은 맞출 필요가 없고, 정렬은 구분선에 적는다."""
+
+    def cells(values: list[str]) -> str:
+        # 리뷰 본문에 세로줄이 들어 있으면 표의 칸 구분자로 오해되므로 막아 준다
+        return "| " + " | ".join(value.replace("|", "\\|") for value in values) + " |"
+
+    divider = "| " + " | ".join("---:" if align == "r" else "---" for align in aligns) + " |"
+    return "\n".join([cells(headers), divider] + [cells(row) for row in rows])
+
+
+def render_report(reviews: list[dict], insights: dict | None = None,
+                  style: str = "text") -> str:
+    """리포트를 글자로 만들어 돌려준다. 화면에 찍지도, 파일로 저장하지도 않는다.
+
+    reviews  : 'rating', 'sentiment', 'review_text' 키를 가진 딕셔너리들의 목록
+    insights : B의 extract_insights() 결과. D가 넘겨준다.
+               없으면 해당 구역만 안내문으로 채우고 리포트는 정상으로 만든다
+    style    : "text"(콘솔·TXT) 또는 "markdown"(MD)
+    """
+    blocks = _report_blocks(reviews, insights)
+
+    if style == "text":
+        return _render_text(blocks)
+    if style == "markdown":
+        return _render_markdown(blocks)
+
+    # 데이터가 비는 것과 달리 이건 부르는 쪽의 오타다.
+    # 조용히 넘기면 엉뚱한 형식의 파일이 만들어지므로 여기서는 멈춘다.
+    raise ValueError(f"style은 'text' 또는 'markdown'이어야 합니다. 받은 값: {style!r}")
+
+
+def print_report(reviews: list[dict], insights: dict | None = None) -> str:
+    """리포트를 콘솔에 출력하고, 출력한 글자를 그대로 돌려준다.
+
+    윈도우 기본 콘솔은 UTF-8이 아니라 cp949를 쓴다. 리뷰에 이모지처럼
+    cp949에 없는 글자가 하나라도 섞이면 print가 실패하며 프로그램이 멈춘다.
+    화면에 못 찍는 글자 하나 때문에 리포트 전체를 못 보는 건 말이 안 되므로,
+    그럴 때는 그 글자만 '?'로 바꿔서라도 출력한다.
+    파일(UTF-8)에는 원래 글자가 그대로 들어가므로 내용이 손상되지 않는다.
+    """
+    text = render_report(reviews, insights, style="text")
+
+    try:
+        print(text)
+    except UnicodeEncodeError:
+        encoding = sys.stdout.encoding or "utf-8"
+        print(text.encode(encoding, errors="replace").decode(encoding))
+        logger.warning(
+            "콘솔(%s)이 표시할 수 없는 글자가 있어 화면에서만 '?'로 바꿔 출력했습니다. "
+            "저장된 리포트 파일에는 원래 글자가 그대로 들어 있습니다.",
+            encoding,
+        )
+
+    return text
+
+
+def save_report(reviews: list[dict], insights: dict | None = None,
+                out_dir: str = "output", basename: str = "report") -> dict:
+    """리포트를 TXT와 MD 두 파일로 저장하고 {"txt": 경로, "md": 경로}를 돌려준다.
+
+    줄바꿈은 운영체제 기본값을 그대로 쓴다(윈도우 CRLF / 리눅스 LF).
+    output/ 폴더는 .gitignore에 있어 레포에 올라가지 않으므로,
+    형식을 통일하는 것보다 윈도우 메모장에서 줄이 제대로 보이는 쪽이 낫다.
+    """
+    os.makedirs(out_dir, exist_ok=True)
+    paths = {}
+
+    for style, extension in (("text", "txt"), ("markdown", "md")):
+        path = os.path.join(out_dir, f"{basename}.{extension}")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(render_report(reviews, insights, style=style))
+        paths[extension] = path
+        logger.info("리포트 저장: %s", path)
+
+    return paths
 
 
 # ─────────────────────────────────────────────────────────────
@@ -638,21 +957,16 @@ if __name__ == "__main__":
     for path in charts:
         print(f"  - {path}")
 
-    # 단위 3에서 만든 통계·품질 지표를 눈으로 확인한다.
-    # ※ 아래 숫자 중 '별점-감정 일치율'은 지금 100%로 나오는 게 정상이다.
-    #   단독 실행 모드의 감정값이 별점으로 매긴 임시값이라 어긋날 수가 없기 때문이다.
-    #   B의 AI 분석이 붙어야 이 지표에 의미가 생긴다.
-    stats = calc_stats(reviews)
-    match = stats["match"]
+    # 단위 4 — 리포트를 콘솔에 찍고 TXT·MD 두 파일로 저장한다.
+    # ※ 여기서는 insights를 넘기지 않는다. B의 extract_insights() 결과는
+    #   D가 main.py에서 호출해 넘겨주기로 한 값이라, 단독 실행에서는 알 수 없다.
+    #   그래서 리포트의 6~8번 구역은 안내문으로 채워진 채 정상 생성된다.
+    # ※ '별점-감정 일치율'이 100%로 나오는 것도 정상이다.
+    #   단독 실행 모드의 감정값이 별점으로 매긴 임시값이라 어긋날 수가 없다.
+    print()
+    print_report(reviews)
 
-    print("\n[통계·품질 지표]")
-    print(f"  전체 {stats['total']}건 · 감정 분석 완료 {stats['analyzed']}건 "
-          f"· 미분석 {stats['unanalyzed']}건")
-    for sentiment in SENTIMENT_ORDER:
-        print(f"    {SENTIMENT_KO[sentiment]} {stats['sentiment_counts'][sentiment]}건")
-    print(f"  ① 긍정 비율        : {_pct_text(stats['positive_ratio'])}")
-    print(f"  ② 평균 별점        : {stats['avg_rating']}점 (별점 있는 {stats['rated']}건 기준)")
-    print(f"  ③ 별점-감정 일치율 : {_pct_text(match['match_rate'])} "
-          f"(판정 {match['compared']}건 중 어긋남 {match['mismatched']}건)")
-    print(f"       별점 4~5인데 부정: {match['high_rating_negative']}건")
-    print(f"       별점 1~2인데 긍정: {match['low_rating_positive']}건")
+    paths = save_report(reviews)
+    print("저장된 리포트:")
+    for extension, path in paths.items():
+        print(f"  - {path}")
