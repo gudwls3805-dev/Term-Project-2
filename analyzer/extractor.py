@@ -10,6 +10,8 @@ from google import genai
 class ExtractionResult(TypedDict):
     positive_keywords: list[str]
     negative_keywords: list[str]
+    frequent_praises: list[str]
+    frequent_complaints: list[str]
     summary: str
     improvements: list[str]
 
@@ -41,10 +43,18 @@ def extract_insights(reviews: list[str]) -> ExtractionResult | None:
 - 고객의 불만이나 부정적인 평가와 관련된 주요 키워드를 추출하세요.
 - 최대 5개까지 작성하세요.
 
-3. summary
+3. frequent_praises
+- 여러 리뷰에서 반복적으로 언급되는 칭찬 사항을 추출하세요.
+- 최대 5개까지 작성하세요.
+
+4. frequent_complaints
+- 여러 리뷰에서 반복적으로 언급되는 불만 사항을 추출하세요.
+- 최대 5개까지 작성하세요.
+
+5. summary
 - 전체 리뷰의 주요 내용을 2~3문장으로 요약하세요.
 
-4. improvements
+6. improvements
 - 리뷰를 바탕으로 제품 또는 서비스의 개선 제안을 작성하세요.
 - 최대 3개까지 작성하세요.
 
@@ -54,6 +64,8 @@ def extract_insights(reviews: list[str]) -> ExtractionResult | None:
 {{
     "positive_keywords": ["키워드1", "키워드2"],
     "negative_keywords": ["키워드1", "키워드2"],
+    "frequent_praises": ["칭찬1", "칭찬2"],
+    "frequent_complaints": ["불만1", "불만2"],
     "summary": "전체 리뷰 요약",
     "improvements": ["개선 제안1", "개선 제안2"]
 }}
@@ -77,6 +89,8 @@ def extract_insights(reviews: list[str]) -> ExtractionResult | None:
     required_keys = {
         "positive_keywords",
         "negative_keywords",
+        "frequent_praises",
+        "frequent_complaints",
         "summary",
         "improvements",
     }
@@ -85,9 +99,35 @@ def extract_insights(reviews: list[str]) -> ExtractionResult | None:
         logging.error("키워드/요약 분석 결과에 필요한 항목이 없습니다.")
         return None
 
+    if not isinstance(result["positive_keywords"], list):
+        logging.error("positive_keywords 형식이 올바르지 않습니다.")
+        return None
+
+    if not isinstance(result["negative_keywords"], list):
+        logging.error("negative_keywords 형식이 올바르지 않습니다.")
+        return None
+
+    if not isinstance(result["frequent_praises"], list):
+        logging.error("frequent_praises 형식이 올바르지 않습니다.")
+        return None
+
+    if not isinstance(result["frequent_complaints"], list):
+        logging.error("frequent_complaints 형식이 올바르지 않습니다.")
+        return None
+
+    if not isinstance(result["summary"], str):
+        logging.error("summary 형식이 올바르지 않습니다.")
+        return None
+
+    if not isinstance(result["improvements"], list):
+        logging.error("improvements 형식이 올바르지 않습니다.")
+        return None
+
     return {
         "positive_keywords": result["positive_keywords"],
         "negative_keywords": result["negative_keywords"],
+        "frequent_praises": result["frequent_praises"],
+        "frequent_complaints": result["frequent_complaints"],
         "summary": result["summary"],
         "improvements": result["improvements"],
     }
