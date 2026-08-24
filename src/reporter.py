@@ -598,6 +598,24 @@ def _shorten(text: str | None, limit: int = 38) -> str:
     return flat if len(flat) <= limit else flat[: limit - 1] + "…"
 
 
+def _as_text_list(value) -> list[str]:
+    """AI가 돌려준 값을 '글자 목록'으로 맞춘다.
+
+    B의 extract_insights()는 네 항목이 '있는지'만 확인하고 '무엇인지'는 확인하지 않는다.
+    AI가 형식을 어겨 목록 대신 글자 하나를 돌려줘도 그대로 통과한다.
+    그런데 ", ".join("배송")은 오류를 내지 않고 "배, 송"을 만든다.
+    오류가 안 나니 아무도 모르고, 틀린 글자가 리포트에 멀쩡한 표로 실린다.
+    그래서 리포트에 넣기 전에 여기서 모양을 맞춘다.
+    """
+    if value is None:
+        return []
+    if isinstance(value, str):  # 글자 하나로 왔으면 한 칸짜리 목록으로 감싼다
+        return [value.strip()] if value.strip() else []
+    if isinstance(value, (list, tuple)):
+        return [str(item).strip() for item in value if str(item).strip()]
+    return [str(value)]  # 숫자 등 뜻밖의 값도 일단 글자로 바꿔 보여준다
+
+
 def _longest_negative_reviews(reviews: list[dict], top_n: int = 5) -> list[dict]:
     """부정 리뷰를 글자 수가 많은 순으로 상위 N건 뽑는다. (TOP N 집계)
 
@@ -713,8 +731,8 @@ def _report_blocks(reviews: list[dict], insights: dict | None = None) -> list[tu
 
     # ── 6~8. AI 추출 결과 (B의 extract_insights 결과를 D가 넘겨준다) ──
     missing = "AI 추출 결과가 전달되지 않았습니다. analyze → extract 를 실행한 뒤 다시 만드세요."
-    positive_keywords = (insights or {}).get("positive_keywords") or []
-    negative_keywords = (insights or {}).get("negative_keywords") or []
+    positive_keywords = _as_text_list((insights or {}).get("positive_keywords"))
+    negative_keywords = _as_text_list((insights or {}).get("negative_keywords"))
 
     blocks.append(("h2", "6. AI 키워드 TOP N"))
     if not insights:
@@ -725,9 +743,10 @@ def _report_blocks(reviews: list[dict], insights: dict | None = None) -> list[tu
             [f"부정 TOP {len(negative_keywords)}", ", ".join(negative_keywords) or "-"],
         ], ["l", "l"]))
 
-    blocks += [("h2", "7. AI 요약"), ("text", (insights or {}).get("summary") or "-")]
+    summary = (insights or {}).get("summary")
+    blocks += [("h2", "7. AI 요약"), ("text", str(summary).strip() if summary else "-")]
 
-    improvements = (insights or {}).get("improvements") or []
+    improvements = _as_text_list((insights or {}).get("improvements"))
     blocks.append(("h2", "8. 개선 제안"))
     blocks.append(("list", improvements) if improvements else ("text", "-"))
 
