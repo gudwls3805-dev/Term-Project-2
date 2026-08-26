@@ -220,3 +220,6 @@ __marimo__/
 config.json
 *.db
 output/
+
+# 작업용 문서 — 레포에서 빼고 로컬에만 둔다
+깃허브_작업순서.md
