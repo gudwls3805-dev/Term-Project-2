@@ -17,7 +17,7 @@ import platform
 import statistics
 import unicodedata
 from collections import Counter
-from datetime import datetime
+from datetime import date, datetime, timedelta
 
 import matplotlib
 
@@ -290,8 +290,37 @@ def chart_rating_sentiment(
 
 
 # ─────────────────────────────────────────────────────────────
-# 4. 차트 ④ 수집 순번별 부정 비율 추이 (이동 평균)
+# 4. 차트 ④ 부정 비율 추이 (작성일 기준 · 날짜가 없으면 수집 순번 기준)
 # ─────────────────────────────────────────────────────────────
+
+# 작성일 기준으로 그리려면 이 조건을 모두 넘겨야 한다.
+# 하나라도 못 넘기면 예전처럼 '수집 순번' 기준으로 물러선다.
+TREND_MIN_DATE_RATIO = 0.8  # 감정이 매겨진 리뷰 중 날짜가 읽힌 비율
+TREND_MIN_BUCKETS = 3  # 서로 다른 주(週)가 최소 몇 개나 되는지
+
+
+def _review_date(review: dict):
+    """리뷰의 작성일을 date로 바꾼다. 없거나 형식이 이상하면 None을 준다.
+
+    A의 DB 칸 이름이 그대로 'date'라서 dict(row)로 넘어온 값도 여기서 읽힌다.
+    '2020-01-01', '2020-01-01 09:30:00', datetime, date 어느 쪽이 와도 받는다.
+    """
+    raw = review.get("date")
+    if not raw:
+        return None
+    if isinstance(raw, datetime):
+        return raw.date()
+    if isinstance(raw, date):
+        return raw
+    try:
+        return date.fromisoformat(str(raw).strip()[:10])  # 앞 10글자 = YYYY-MM-DD
+    except ValueError:
+        return None
+
+
+def _week_start(day: date) -> date:
+    """그 날짜가 속한 주의 월요일을 준다. (주 단위로 묶는 기준점)"""
+    return day - timedelta(days=day.weekday())
 
 
 def chart_negative_trend(
@@ -300,14 +329,87 @@ def chart_negative_trend(
     filename: str = "negative_trend.png",
     window: int = 10,
 ) -> str | None:
-    """리뷰를 수집된 순서대로 놓고, 부정 비율이 어떻게 움직이는지 그린다.
+    """부정 비율이 시간에 따라 어떻게 움직이는지 그린다.
 
-    데이터에 작성일이 없어 '시간별 추이' 대신 '수집 순번별 추이'로 만든다.
-    window=10 이면 "직전 10건 중 부정이 몇 %인가"를 한 건씩 밀며 계산한다.
+    작성일(date)이 대부분 채워져 있으면 **주 단위 시간 추이**로 그린다.
+    날짜가 없거나 너무 적으면 예전처럼 **수집 순번별 이동 평균**으로 물러선다.
+    window 는 순번 기준으로 물러섰을 때만 쓰인다.
     """
-    # 감정이 매겨진 리뷰만, 원래 순서 그대로 뽑는다
-    sequence = [r["sentiment"] for r in reviews if r.get("sentiment")]
+    judged = [r for r in reviews if r.get("sentiment")]
 
+    if not judged:
+        logger.warning("분석된 리뷰가 없어 부정 비율 추이 차트를 건너뜁니다.")
+        return None
+
+    dated = [(day, r["sentiment"]) for r in judged if (day := _review_date(r))]
+    buckets = {_week_start(day) for day, _ in dated}
+
+    if (
+        len(dated) >= len(judged) * TREND_MIN_DATE_RATIO
+        and len(buckets) >= TREND_MIN_BUCKETS
+    ):
+        return _trend_by_week(dated, out_dir, filename)
+
+    logger.info(
+        "작성일이 %d/%d건·%d주뿐이라 수집 순번 기준으로 그립니다.",
+        len(dated), len(judged), len(buckets),
+    )
+    return _trend_by_sequence([r["sentiment"] for r in judged], window, out_dir, filename)
+
+
+def _trend_by_week(dated: list[tuple], out_dir: str, filename: str) -> str:
+    """작성일을 주 단위로 묶어 '그 주의 부정 비율'을 선으로 잇는다."""
+    totals: Counter = Counter()
+    negatives: Counter = Counter()
+    for day, sentiment in dated:
+        week = _week_start(day)
+        totals[week] += 1
+        if sentiment == "negative":
+            negatives[week] += 1
+
+    weeks = sorted(totals)
+    ratios = [negatives[w] / totals[w] * 100 for w in weeks]
+    counts = [totals[w] for w in weeks]
+    overall = sum(negatives.values()) / sum(totals.values()) * 100
+
+    thin = min(counts)
+    if thin < 5:
+        # 한 주에 몇 건 없으면 비율이 0%↔100%로 크게 튄다. 읽는 사람이 알아야 한다.
+        logger.info("주당 최소 %d건이라 주별 비율이 크게 흔들릴 수 있습니다.", thin)
+
+    fig, ax = _trend_canvas()
+
+    ax.fill_between(
+        weeks, ratios, overall,
+        where=[y >= overall for y in ratios],
+        color=SENTIMENT_COLOR["negative"], alpha=0.13, linewidth=0, interpolate=True,
+    )
+    ax.plot(weeks, ratios,
+            color=SENTIMENT_COLOR["negative"], linewidth=2.3,
+            marker="o", markersize=4.5, solid_capstyle="round")
+
+    _trend_baseline(ax, weeks[0], overall)
+
+    ax.set_xlim(weeks[0] - timedelta(days=3), weeks[-1] + timedelta(days=3))
+    ax.set_title("부정 비율 추이 (주 단위)", fontsize=13, color=INK, pad=14, loc="left")
+    first = min(day for day, _ in dated)
+    last = max(day for day, _ in dated)
+    ax.set_xlabel(
+        f"리뷰 작성일  ·  {first:%Y-%m-%d} ~ {last:%Y-%m-%d}"
+        f"  ·  주당 {thin}~{max(counts)}건",
+        fontsize=10, color=MUTED,
+    )
+
+    # 주가 많으면 가로 라벨이 겹친다. 최대 8개만 남기고 솎아낸다.
+    step = max(1, len(weeks) // 8 + (1 if len(weeks) % 8 else 0))
+    ax.set_xticks(weeks[::step])
+    ax.set_xticklabels([f"{w:%m/%d}" for w in weeks[::step]])
+
+    return _trend_save(fig, ax, out_dir, filename)
+
+
+def _trend_by_sequence(sequence: list[str], window: int, out_dir: str, filename: str) -> str | None:
+    """작성일이 없을 때 쓰는 예전 방식 — 직전 window건의 부정 비율을 한 칸씩 민다."""
     if len(sequence) < window:
         logger.warning(
             "분석된 리뷰가 %d건뿐이라 %d건 단위 추이를 그릴 수 없습니다.",
@@ -315,7 +417,6 @@ def chart_negative_trend(
         )
         return None
 
-    # 창(window)을 한 칸씩 밀면서 그 구간의 부정 비율을 구한다
     x_values, y_values = [], []
     for end in range(window, len(sequence) + 1):
         chunk = sequence[end - window : end]  # end 바로 앞 window개
@@ -324,30 +425,46 @@ def chart_negative_trend(
 
     overall = sequence.count("negative") / len(sequence) * 100
 
-    fig, ax = plt.subplots(figsize=(7.8, 3.9), facecolor=SURFACE)
-    ax.set_facecolor(SURFACE)
+    fig, ax = _trend_canvas()
 
-    # 전체 평균보다 높은 구간만 옅게 칠해서 '나빠진 구간'을 눈에 띄게 한다
     ax.fill_between(
         x_values, y_values, overall,
         where=[y >= overall for y in y_values],
-        color=SENTIMENT_COLOR["negative"], alpha=0.13, linewidth=0,
+        color=SENTIMENT_COLOR["negative"], alpha=0.13, linewidth=0, interpolate=True,
     )
     ax.plot(x_values, y_values,
             color=SENTIMENT_COLOR["negative"], linewidth=2.3, solid_capstyle="round")
 
-    # 전체 평균 기준선
-    ax.axhline(overall, color=MUTED, linewidth=1, linestyle=(0, (4, 4)))
-    ax.text(x_values[0], overall + 3, f"전체 평균 {overall:.1f}%",
-            fontsize=9.5, color=MUTED, va="bottom")
+    _trend_baseline(ax, x_values[0], overall)
 
-    ax.set_ylim(-4, 104)
     ax.set_xlim(x_values[0] - 0.5, x_values[-1] + 0.5)
     ax.set_title(f"부정 비율 추이 (직전 {window}건 기준)",
                  fontsize=13, color=INK, pad=14, loc="left")
     ax.set_xlabel("리뷰 수집 순번", fontsize=10, color=MUTED)
-    ax.set_ylabel("부정 비율 (%)", fontsize=10, color=MUTED)
 
+    return _trend_save(fig, ax, out_dir, filename)
+
+
+def _trend_canvas():
+    """추이 차트 두 종류가 함께 쓰는 빈 도화지."""
+    fig, ax = plt.subplots(figsize=(7.8, 3.9), facecolor=SURFACE)
+    ax.set_facecolor(SURFACE)
+    ax.set_ylim(-4, 104)
+    ax.set_ylabel("부정 비율 (%)", fontsize=10, color=MUTED)
+    return fig, ax
+
+
+def _trend_baseline(ax, x_left, overall: float) -> None:
+    """전체 평균 기준선 — 이보다 위면 '평소보다 나빴던 구간'이다."""
+    ax.axhline(overall, color=MUTED, linewidth=1, linestyle=(0, (4, 4)))
+    ax.text(x_left, overall + 5, f"전체 평균 {overall:.1f}%",
+            fontsize=9.5, color=MUTED, va="bottom",
+            # 선 위에 글자가 겹쳐 뭉개지지 않게 배경색을 한 겹 깐다
+            bbox=dict(facecolor=SURFACE, edgecolor="none", pad=1.5))
+
+
+def _trend_save(fig, ax, out_dir: str, filename: str) -> str:
+    """눈금·테두리를 정리하고 PNG로 저장한다."""
     ax.tick_params(axis="both", length=0, labelsize=9.5, colors=MUTED)
     ax.set_axisbelow(True)
     ax.yaxis.grid(True, color=GRID, linewidth=0.8)
@@ -892,7 +1009,7 @@ def save_report(reviews: list[dict], insights: dict | None = None,
 # 9. 혼자 확인해 보는 용도 —  python src/reporter.py
 # ─────────────────────────────────────────────────────────────
 
-DEMO_CSV = "naver_reviews_sample50.csv"
+DEMO_CSV = "naver_reviews_sample50_3.csv"
 
 
 def _rating_to_sentiment(rating: int) -> str:
@@ -933,6 +1050,9 @@ def _load_demo_reviews(csv_path: str = DEMO_CSV) -> list[dict]:
                     "rating": rating,
                     "sentiment": _rating_to_sentiment(rating),  # ← 임시값
                     "score": None,
+                    # 칸 이름을 A의 DB 스키마와 똑같이 'date'로 맞춰 둔다.
+                    # 그래야 실제 파이프라인에서 dict(row)로 넘어온 값도 그대로 읽힌다.
+                    "date": (row.get("date") or "").strip() or None,
                 }
             )
         logger.info("샘플 CSV %d건 로드 (감정은 별점 기준 임시값)", len(reviews))
