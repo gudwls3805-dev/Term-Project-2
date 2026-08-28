@@ -4,8 +4,7 @@ import json
 import logging
 
 from dotenv import load_dotenv
-from google import genai
-
+from openai import OpenAI
 
 class ExtractionResult(TypedDict):
     positive_keywords: list[str]
@@ -17,7 +16,7 @@ class ExtractionResult(TypedDict):
 
 load_dotenv()
 
-client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 def extract_insights(reviews: list[str]) -> ExtractionResult | None:
     if not reviews:
@@ -75,12 +74,12 @@ def extract_insights(reviews: list[str]) -> ExtractionResult | None:
 """
 
     try:
-        response = client.models.generate_content(
-            model="gemini-3.5-flash",
-            contents=prompt,
+        response = client.responses.create(
+            model="gpt-5.6-luna",
+            input=prompt,
         )
 
-        result = json.loads(response.text)
+        result = json.loads(response.output_text)
 
     except Exception as e:
         logging.error("키워드/요약 분석 API 호출 실패: %s", e)
