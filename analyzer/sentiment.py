@@ -5,7 +5,7 @@ import logging
 from urllib import response
 
 from dotenv import load_dotenv
-from openai import OpenAI
+from google import genai
 
 
 class SentimentResult(TypedDict):
@@ -15,7 +15,7 @@ class SentimentResult(TypedDict):
 
 load_dotenv()
 
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
 def analyze_sentiment(text: str) -> SentimentResult | None:
     prompt = f"""
@@ -42,12 +42,12 @@ confidence는 해당 감정 분류에 대한 신뢰도를
 """
 
     try:
-        response = client.responses.create(
-            model="gpt-5.6-luna",
-            input=prompt,
-        )
+        response = client.models.generate_content(
+            model="gemini-3.1-flash-lite",
+            contents=prompt,
+    )
 
-        result = json.loads(response.output_text)
+        result = json.loads(response.text)
 
         sentiment = result["sentiment"]
         confidence = float(result["confidence"])
