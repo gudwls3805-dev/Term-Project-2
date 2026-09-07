@@ -1,0 +1,8 @@
+{
+  "db_path": "review.db",
+  "dedup_policy": "skip",
+  "min_review_length": 5,
+  "ai": { "api_key_env": "GEMINI_API_KEY" },
+  "visualization": { "output_dir": "output", "font": "NanumGothic", "dpi": 120 },
+  "logging": { "level": "INFO" }
+}
